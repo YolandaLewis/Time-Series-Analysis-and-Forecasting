@@ -1,0 +1,272 @@
+# Copy Right: Yolanda Lewis
+
+library(ggplot2)
+library(ggfortify)
+library(tidyr)
+library(forecast)
+library(lmtest)
+library(fUnitRoots)
+library(tseries)
+library(fpp2)
+library(fpp3)   
+library(TSA)
+library(astsa)   
+source("Backtest.R")
+source("eacf.R")
+library(dynlm)
+library(fGarch)
+
+#### Adjust Prices due to Inflation ####
+library(quantmod)
+getSymbols("CPIAUCSL", src='FRED')
+adjRate = CPIAUCSL/as.numeric(CPIAUCSL['2020-03'])
+adjRate = adjRate["1996-01/2020-03"]
+
+########################################
+##### Read In Dataset ##################
+########################################
+
+Zillow_2BedHousingPrice_Data = read.csv("Zillow_2BedHousingPrice_Data")
+
+##########################################################
+############### Data Pre-processing  ######################
+##########################################################
+
+
+# Make Chicago data frame###
+
+CHI_Housing_df <- Zillow_2BedHousingPrice_Data %>% dplyr::filter(RegionName == "Chicago" & State == "IL")
+
+CHI_Housing_df <- CHI_Housing_df %>% 
+  pivot_longer(!c(RegionName, State), names_to = "date", values_to = "Price")
+
+head(CHI_Housing_df)
+
+# Convert Date to date format
+CHI_Housing_df$date <- gsub("X", "", CHI_Housing_df$date)
+CHI_Housing_df$date = as.Date(CHI_Housing_df$date, format="%m.%d.%Y")
+sum(is.na(CHI_Housing_df))
+
+
+# Apply Inflation
+CHI_Housing_df['adjPrice'] = CHI_Housing_df$Price / adjRate$CPIAUCS
+
+
+#Create a Mineapolis dataframe #####
+
+Mineapolis_Housing_df <- Zillow_2BedHousingPrice_Data %>% dplyr::filter(RegionName == "Minneapolis" & State == "MN")
+
+Mineapolis_Housing_df <- Mineapolis_Housing_df %>% 
+  pivot_longer(!c(RegionName, State), names_to = "date", values_to = "Price")
+
+head(Mineapolis_Housing_df)
+
+# Convert Date to date format
+Mineapolis_Housing_df$date <- gsub("X", "", Mineapolis_Housing_df$date)
+Mineapolis_Housing_df$date = as.Date(Mineapolis_Housing_df$date, format="%m.%d.%Y")
+sum(is.na(Mineapolis_Housing_df))
+
+
+# Apply Inflation
+Mineapolis_Housing_df['adjPrice'] = Mineapolis_Housing_df$Price / adjRate$CPIAUCS
+
+
+#################################################################
+################ Exploratory Analysis  ##########################
+#################################################################
+
+# Create TS object
+Chicago_2BedHousing_TS = ts(CHI_Housing_df$adjPrice, start=c(1996, 1), frequency=12)
+Minn_2BedHousing_TS = ts(Mineapolis_Housing_df$adjPrice, start=c(1996, 1), frequency=12)
+
+autoplot(Chicago_2BedHousing_TS) + ggtitle("Chicago 2 Bedroom Housing Prices") + labs( x= "Date", y= "Chicago Housing Price" )
+autoplot(Minneapolis2BedHousing_TS) + ggtitle("Minneapolis 2 Bedroom Housing Prices") + labs( x= "Date", y= "Minneapolis Housing Price" )
+
+              
+#Check Data for Normality
+hist(CHI_Housing_df$Price, main = "Distribution of Chicago 2 Bedroom Housing Prices",xlab = "Chicago Housing Prices" )
+qqnorm(CHI_Housing_df$Price, pch = 1, frame = T, main = 'Normal Quantile Plot of Chicago 2 Bedroom Housing Prices')
+qqline(CHI_Housing_df$Price, col = "red", lwd = 2)
+
+jarque.bera.test(Chicago_2BedHousing_TS)
+
+# Transform data
+log_CHI_Housing = log(Chicago_2BedHousing_TS)
+log_CHI_Housing
+
+log_Minn_Housing = log(Minn_2BedHousing_TS)
+
+
+transformed_CHI_Housing = diff(log(Chicago_2BedHousing_TS))
+autoplot((transformed_CHI_Housing))
+Acf(transformed_CHI_Housing)
+Pacf(transformed_CHI_Housing)
+Acf(log_CHI_Housng)
+Pacf(log_CHI_Housng)
+
+transformed_Minn_Housing = diff(log(Minn_2BedHousing_TS))
+#Check Normality again
+hist(transformed_CHI_Housing, main = " Second Order Difference and Log Distribution of Chicago 2 Bedroom Housing Prices",xlab = "Chicago Housing Prices" )
+qqnorm(transformed_CHI_Housing, pch = 1, frame = T, main = 'Normal Quantile Plot of Chicago 2 Bedroom Housing Prices (Second Order Difference)')
+qqline(transformed_CHI_Housing, col = "red", lwd = 2)
+
+#Check Stationarity
+adfTest(transformed_CHI_Housing, type = c ('nc'))
+
+kpss.test(transformed_CHI_Housing, null='L')
+
+##############################
+# Second order differencing
+#############################
+transformed_CHI_Housing_2 <- diff(transformed_CHI_Housing)
+transformed_Minn_Housing_2 <- diff(diff(log(Minn_2BedHousing_TS)))
+
+autoplot(transformed_CHI_Housing_2, main = "Second Order Differenced Chicago 2 Bedroom Housing") + labs (y= "Chicago Housing Prices", x= "Date")
+autoplot(transformed_Minn_Housing_2)
+
+plot(Acf(transformed_CHI_Housing_2), main= "Chicago 2 Bedroom Second Order Differenced ACF")
+plot(Pacf(transformed_CHI_Housing_2), main= "Chicago 2 Bedroom Second Order Differenced PACF")
+eacf(transformed_CHI_Housing_2)
+Acf(transformed_CHI_Housing_2)
+
+#Check Stationarity
+adfTest(transformed_CHI_Housing_2, type = c ('nc'))
+
+kpss.test(transformed_CHI_Housing_2, null='L')
+
+########################################################
+###############  ARMA Modeling #########################
+########################################################
+
+#fit 1 is model of choice
+
+fit1 <- Arima(transformed_CHI_Housing_2, order = c(1,0,3), seasonal = list(order=c(0,0,1), period = 12))
+summary(fit1)
+coeftest(fit1)
+
+plot(Acf(fit1$residuals), main= "SARIMA (1,0,3)(0,0,1)[12] Residual ACF")
+plot(Pacf(fit1$residuals), main = "SARIMA (1,0,3)(0,0,1)[12] Residual PACF")
+plot(fit1$residuals, main = "SARMIA(1,0,3)(0,0,1)[12] Residual Plot", xlab="Date", ylab = "Chicago Housing Price" )
+jarqueberaTest(fit1$residuals)
+Box.test(fit1$residuals, lag=5, type = "Ljung-Box")
+adf.test(fit1$residuals)
+kpss.test(fit1$residuals)
+
+source("backtest.R")
+n = length(transformed_CHI_Housing_2)
+backtest(fit1, transformed_CHI_Housing_2, h=1, orig=0.8*n)
+
+autoplot(forecast(fit1, h=30),include = 50)
+
+
+
+auto_model <- auto.arima(transformed_CHI_Housing_2, ic ="bic")
+auto_model
+summary(auto_model)
+coeftest(auto_model)
+jarqueberaTest(auto_model$residuals)
+Acf(auto_model$residuals)
+Box.test(auto_model$residuals)
+
+n = length(transformed_CHI_Housing_2)
+backtest(auto_model, transformed_CHI_Housing_2, h=1, orig=0.8*n)
+autoplot(forecast(auto_model, h=10), include = 50 )
+
+#################################################################################################
+####################################################################
+fit3 <- Arima(transformed_CHI_Housing_2, order = c(2, 0, 4), seasonal = list(order = c(0,0,1)), fix = c(NA,NA,NA,0,NA,NA,NA, NA))
+summary(fit3)
+coeftest(fit3)
+
+
+Acf(fit3$residuals)
+Box.test(fit3$residuals, lag=5, type = "Ljung-Box")
+
+hist(fit3$residuals, main = " Log Distribution of Chicago 2 Bedroom Housing Prices",xlab = "Chicago Housing Prices" )
+jarqueberaTest(fit3$residuals)
+qqnorm(fit3$residuals, pch = 1, frame = T, main = 'Normal Quantile Plot of Chicago 2 Bedroom Housing Prices')
+qqline(fit3$residuals, col = "red", lwd = 2)
+
+source("backtest.R")
+n = length(transformed_CHI_Housing)
+backtest(fit3, transformed_CHI_Housing, h=1, orig=0.8*n)
+
+autoplot(forecast(fit3, h=30))
+
+
+##################################################
+# Plot Chicago vs Minneapolis Housing Prices  ####
+##################################################
+
+ggplot() + 
+  geom_line(data = CHI_Housing_df, aes(x=date, y = Price , color = "Chicago Housing Price")) +
+  geom_line(data = Mineapolis_Housing_df, aes(x =date, y = Price, color = " Minneapolis Housing Price"))+
+  xlab('Date') +
+  ylab('Housing Prices')+
+  ggtitle("Chicago Vs Minneapolis 2 Bedroom Housing Prices")
+
+Housing_ccf = ccf(transformed_CHI_Housing, transformed_Minn_Housing)
+Housing_ccf
+plot(Housing_ccf, main = "Chicago & Minneapolis")
+autoplot(Housing_ccf)
+
+lag2.plot(log_CHI_Housng,log_Minn_Housing,8)
+
+Housing_ccf2 = prewhiten(transformed_CHI_Housing,transformed_Minn_Housing, x.model = fit1)
+Housing_ccf2
+
+
+frequency(transformed_CHI_Housing_2)
+frequency(transformed_Minn_Housing_2)
+
+library(dynlm)
+fit2 <- dynlm(transformed_CHI_Housing ~ transformed_Minn_Housing, 0.833)
+fit2
+coeftest(fit2)
+Box.test(fit2$residuals, type = "Ljung")
+adfTest(fit2$residuals)
+kpss.test(fit2$residuals)
+
+Acf(fit2$residuals^2)
+Pacf(fit2$residuals)
+
+source("backtest.R")
+n = length(transformed_CHI_Housing)
+backtest(fit2, transformed_CHI_Housing, h=1, orig=0.8*n)
+
+autoplot(forecast(fit2, h=10))
+
+
+###################################################
+######### LAG REGRESSION ###########################
+#####################################################
+xvars <- cbind(adj_Minn_TS,adj_CHI_TS)
+adj_Minn_TS <- - transformed_Minn_Housing[-length(transformed_Minn_Housing)]
+adj_CHI_TS <- ts(CHI_Housing_df$adjPrice)[-1]
+
+REG_fit1 <- Arima(transformed_CHI_Housing_2, xreg = adj_Minn_TS, order=c(1,0,3), seasonal = list(order = c(0,0,1)))
+REG_fit1
+coeftest(REG_fit1)
+sqrt(mean(REG_fit1$residuals^2))
+
+adfTest(REG_fit1$residuals)
+kpss.test(REG_fit1$residuals)
+Box.test(REG_fit1$residuals, type = "Ljung")
+checkresiduals(REG_fit1)
+
+Acf(REG_fit1$residuals)
+Pacf(REG_fit1$residuals)
+eacf(REG_fit1$residuals)
+
+n = length(transformed_CHI_Housing_2)
+backtest(REG_fit1, transformed_CHI_Housing_2, h=1, orig=0.8*n)
+
+autoplot(forecast(REG_fit1,xreg = transformed_CHI_Housing_2, h=5))
+
+view(transformed_CHI_Housing_2)
+view(transformed_Minn_Housing_2)
+
+length(transformed_CHI_Housing_2)
+length(transformed_Minn_Housing_2)
+length(adj_Minn_TS)
+length(transformed_CHI_Housing)
